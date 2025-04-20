@@ -2,6 +2,8 @@ from rest_framework import serializers
 from .models import MyUser, PasswordResetCode
 from django.core.mail import send_mail
 from django.conf import settings
+from django.contrib.auth.hashers import check_password
+
 
 
 class UserRegistrationSerializer(serializers.ModelSerializer):
@@ -65,6 +67,7 @@ class PasswordResetRequestSerializer(serializers.Serializer):
         send_mail(subject, message, from_email, recipient_list)
         return reset_code
 
+
 class PasswordResetConfirmSerializer(serializers.Serializer):
     code = serializers.CharField(max_length=6, min_length=6)
     new_password = serializers.CharField(min_length=8, write_only=True)
@@ -73,12 +76,19 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
     def validate(self, data):
         if data['new_password'] != data['new_password_confirm']:
             raise serializers.ValidationError({"new_password_confirm": "Пароли не совпадают."})
+
         try:
             reset_code = PasswordResetCode.objects.get(code=data['code'])
         except PasswordResetCode.DoesNotExist:
             raise serializers.ValidationError({"code": "Неверный или несуществующий код."})
+
         if reset_code.is_expired():
             raise serializers.ValidationError({"code": "Срок действия кода истёк."})
+
+        user = reset_code.user
+        if check_password(data['new_password'], user.password):
+            raise serializers.ValidationError({"new_password": "Новый пароль не может совпадать с текущим."})
+
         return data
 
     def save(self):
