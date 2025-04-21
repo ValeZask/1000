@@ -1,0 +1,118 @@
+"""
+/* static/admin/css/custom_admin.css */
+:root {
+  --primary: #2b5797;
+  --secondary: #4b82d5;
+  --accent: #0078d7;
+  --primary-fg: #fff;
+  --body-fg: #333;
+  --body-bg: #f8f8f8;
+  --header-color: #fff;
+}
+
+#header {
+  background: var(--primary);
+  color: var(--header-color);
+}
+
+#branding h1 {
+  color: var(--header-color);
+}
+
+.module h2, .module caption, .inline-group h2 {
+  background: var(--secondary);
+}
+
+div.breadcrumbs {
+  background: var(--secondary);
+}
+
+a:link, a:visited {
+  color: var(--accent);
+}
+
+.button, input[type=submit], input[type=button], .submit-row input, a.button {
+  background: var(--primary);
+}
+
+.button:hover, input[type=submit]:hover, input[type=button]:hover {
+  background: var(--secondary);
+}
+
+.button.default, input[type=submit].default, .submit-row input.default {
+  background: var(--accent);
+}
+
+.select2-container--admin-autocomplete .select2-results__option--highlighted[aria-selected] {
+  background-color: var(--accent);
+}
+
+/* Красивые карточки для модулей на главной странице */
+.dashboard .module {
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  margin-bottom: 20px;
+  transition: box-shadow 0.3s ease;
+}
+
+.dashboard .module:hover {
+  box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+}
+
+/* Стили для списка объектов */
+#changelist-filter h2 {
+  background: var(--secondary);
+}
+
+.paginator a:link, .paginator a:visited {
+  background: var(--primary);
+  color: var(--primary-fg);
+}
+
+/* Улучшенные инлайн стили */
+.inline-related {
+  border-radius: 4px;
+  border: 1px solid #ddd;
+  margin-bottom: 10px;
+}
+
+/* Улучшенные формы */
+.form-row {
+  padding: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+/* Табы в админке */
+.submit-row {
+  border-radius: 4px;
+}
+"""
+
+# Затем добавьте в settings.py:
+"""
+STATICFILES_DIRS = [
+    BASE_DIR / 'static',
+]
+
+# Добавьте эту строку в конец settings.py
+ADMIN_STYLE = True
+"""
+
+# core/templates/admin/base_site.html
+"""
+{% extends "admin/base.html" %}
+{% load static %}
+
+{% block title %}{{ title }} | {{ site_title|default:_('Django site admin') }}{% endblock %}
+
+{% block extrahead %}
+    {{ block.super }}
+    <link rel="stylesheet" type="text/css" href="{% static 'admin/css/custom_admin.css' %}">
+{% endblock %}
+
+{% block branding %}
+<h1 id="site-name"><a href="{% url 'admin:index' %}">{{ site_header|default:_('Django administration') }}</a></h1>
+{% endblock %}
+
+{% block nav-global %}{% endblock %}
+"""

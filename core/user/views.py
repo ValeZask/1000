@@ -80,10 +80,10 @@ class DeleteAccountView(APIView):
     def delete(self, request):
         user = request.user
         try:
-            # Аннулировать все токены пользователя
             RefreshToken.for_user(user).blacklist()
-            # Удалить пользователя
             user.delete()
             return Response({"message": "Аккаунт успешно удалён."}, status=status.HTTP_204_NO_CONTENT)
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+

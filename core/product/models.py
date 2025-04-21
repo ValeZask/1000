@@ -3,6 +3,7 @@ from django.db import models
 from decimal import Decimal
 from .choices import ProductStatusEnum, BannerPositionEnum
 from django.contrib.auth import get_user_model
+from django.core.validators import MinValueValidator
 
 
 User = get_user_model()
@@ -116,11 +117,9 @@ class Product(TimeStampedModel):
         verbose_name='Статус',
         max_length=30
     )
-    sizes = models.ManyToManyField(
-        Size,
-        verbose_name='Размеры',
-        related_name='products'
-    )
+
+    def available_sizes(self):
+        return self.inventory.filter(stock__gt=0).select_related('size')
 
     @property
     def final_price(self) -> Decimal:
@@ -210,3 +209,30 @@ class Favorite(models.Model):
         verbose_name = 'Избранное'
         verbose_name_plural = 'Избранное'
         unique_together = ('user', 'product')
+
+
+class ProductSizeInventory(models.Model):
+    product = models.ForeignKey(
+        Product,
+        on_delete=models.CASCADE,
+        related_name='inventory',
+        verbose_name='Товар'
+    )
+    size = models.ForeignKey(
+        Size,
+        on_delete=models.CASCADE,
+        verbose_name='Размер'
+    )
+    stock = models.PositiveIntegerField(
+        'Количество в наличии',
+        default=0,
+        validators=[MinValueValidator(0)]
+    )
+
+    def __str__(self):
+        return f"{self.product.name} - {self.size.name} ({self.stock} шт.)"
+
+    class Meta:
+        verbose_name = 'Запас товара'
+        verbose_name_plural = 'Запасы товаров'
+        unique_together = ('product', 'size')
