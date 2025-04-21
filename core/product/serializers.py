@@ -1,4 +1,4 @@
-from .models import Product, Banner, Brand, Category, Size, Image, Cart, CartItem, Favorite
+from .models import Product, Banner, Brand, Category, Size, Image, Cart, CartItem, Favorite, ProductSizeInventory
 from rest_framework import serializers
 from decimal import Decimal
 
@@ -23,10 +23,14 @@ class BrandListSerializer(serializers.ModelSerializer):
 
 class ProductListSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
-    final_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    final_price = serializers.SerializerMethodField()
+
     class Meta:
         model = Product
         fields = ('id', 'name', 'category', 'price', 'discount_percent', 'final_price', 'main_cover', 'get_status_display')
+
+    def get_final_price(self, obj):
+        return obj.final_price
 
 
 class SizeSerializer(serializers.ModelSerializer):
@@ -41,16 +45,31 @@ class ImageSerializer(serializers.ModelSerializer):
         fields = ('id', 'file')
 
 
+class ProductSizeInventorySerializer(serializers.ModelSerializer):
+    size = SizeSerializer(read_only=True)
+
+    class Meta:
+        model = ProductSizeInventory
+        fields = ('size', 'stock')
+
+
 class ProductDetailSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
-    final_price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    final_price = serializers.SerializerMethodField()
     images = ImageSerializer(many=True, read_only=True)
-    sizes = SizeSerializer(many=True, read_only=True)
+    sizes = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = ('id', 'name', 'category', 'price', 'discount_percent', 'final_price',
                   'description', 'main_cover', 'images', 'sizes', 'get_status_display')
+
+    def get_final_price(self, obj):
+        return obj.final_price  # Вызываем @property
+
+    def get_sizes(self, obj):
+        inventory = obj.inventory.filter(stock__gt=0).select_related('size')
+        return ProductSizeInventorySerializer(inventory, many=True).data
 
 
 class RelatedProductSerializer(serializers.ModelSerializer):
@@ -75,6 +94,22 @@ class CartItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = CartItem
         fields = ('id', 'product', 'product_details', 'size', 'quantity', 'subtotal')
+
+    def validate(self, data):
+        product = data['product']
+        size = data['size']
+        quantity = data.get('quantity', 1)
+
+        inventory = ProductSizeInventory.objects.filter(product=product, size=size).first()
+        if not inventory:
+            raise serializers.ValidationError({"size": "Выбранный размер недоступен для этого товара."})
+
+        if quantity > inventory.stock:
+            raise serializers.ValidationError({
+                "quantity": f"Недостаточно товара. В наличии: {inventory.stock} шт."
+            })
+
+        return data
 
     def get_product_details(self, obj):
         return {

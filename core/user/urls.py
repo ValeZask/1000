@@ -24,3 +24,4 @@ urlpatterns = [
     path('password/reset/confirm/', PasswordResetConfirmView.as_view(), name='password_reset_confirm'),
     path('account/delete/', DeleteAccountView.as_view(), name='delete_account'),
 ]
+

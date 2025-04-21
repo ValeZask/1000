@@ -1,11 +1,12 @@
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView, Response
-from django.db.models import F, Q
+from django.db.models import F, Q, Count, ExpressionWrapper, DecimalField
 from rest_framework.permissions import IsAuthenticated
-from .models import Product, Banner, Brand, Cart, CartItem, Size, Image, Favorite
+from .models import Product, Banner, Brand, Cart, CartItem, Size, Image, Favorite, ProductSizeInventory
 from django.shortcuts import get_object_or_404
 from .models import Product
 from rest_framework import status
-
+from decimal import Decimal
 from .serializers import (
     BannerListSerializer,
     BrandListSerializer,
@@ -48,7 +49,7 @@ class ProductDetailView(APIView):
 
     def get(self, request, pk):
         product = get_object_or_404(
-            Product.objects.select_related('category').prefetch_related('images', 'sizes'),
+            Product.objects.select_related('category').prefetch_related('images', 'inventory'),
             pk=pk, is_active=True
         )
 
@@ -89,15 +90,10 @@ class CartView(APIView):
         serializer = CartItemSerializer(data=request.data)
         if serializer.is_valid():
             product = serializer.validated_data['product']
-            size = serializer.validated_data['size']  # Теперь size — это объект Size
+            size = serializer.validated_data['size']
             quantity = serializer.validated_data['quantity']
 
-            # Проверяем, есть ли товар с таким размером
-            if size not in product.sizes.all():
-                return Response({"error": "Выбранный размер недоступен для этого товара"},
-                                status=status.HTTP_400_BAD_REQUEST)
-
-            # Проверяем или обновляем существующий элемент
+            # Проверяем, есть ли уже такой элемент
             cart_item, created = CartItem.objects.get_or_create(
                 cart=cart,
                 product=product,
@@ -105,7 +101,14 @@ class CartView(APIView):
                 defaults={'quantity': quantity}
             )
             if not created:
-                cart_item.quantity += quantity
+                new_quantity = cart_item.quantity + quantity
+                # Проверяем запас при добавлении
+                inventory = ProductSizeInventory.objects.filter(product=product, size=size).first()
+                if new_quantity > inventory.stock:
+                    return Response({
+                        "error": f"Недостаточно товара. В наличии: {inventory.stock} шт."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+                cart_item.quantity = new_quantity
                 cart_item.save()
 
             return Response(CartSerializer(cart).data, status=status.HTTP_201_CREATED)
@@ -119,22 +122,33 @@ class CartItemUpdateView(APIView):
         cart = get_object_or_404(Cart, user=request.user)
         cart_item = get_object_or_404(CartItem, id=item_id, cart=cart)
 
-        # Проверяем входные данные
         quantity = request.data.get('quantity')
-        size_name = request.data.get('size')  # Теперь size — строка, например "M"
+        size_name = request.data.get('size')
 
         if quantity is not None:
             if not isinstance(quantity, int) or quantity < 1:
                 return Response({"error": "Количество должно быть положительным числом"},
                                 status=status.HTTP_400_BAD_REQUEST)
+            # Проверяем запас
+            inventory = ProductSizeInventory.objects.filter(
+                product=cart_item.product, size=cart_item.size
+            ).first()
+            if quantity > inventory.stock:
+                return Response({
+                    "error": f"Недостаточно товара. В наличии: {inventory.stock} шт."
+                }, status=status.HTTP_400_BAD_REQUEST)
             cart_item.quantity = quantity
 
         if size_name is not None:
             size = get_object_or_404(Size, name=size_name)
-            if size not in cart_item.product.sizes.all():
+            inventory = ProductSizeInventory.objects.filter(product=cart_item.product, size=size).first()
+            if not inventory:
                 return Response({"error": "Выбранный размер недоступен для этого товара"},
                                 status=status.HTTP_400_BAD_REQUEST)
-            # Проверяем, нет ли уже такого элемента с другим размером
+            if inventory.stock < cart_item.quantity:
+                return Response({
+                    "error": f"Недостаточно товара для размера {size_name}. В наличии: {inventory.stock} шт."
+                }, status=status.HTTP_400_BAD_REQUEST)
             if CartItem.objects.filter(cart=cart, product=cart_item.product, size=size).exclude(
                     id=cart_item.id).exists():
                 return Response({"error": "Товар с этим размером уже есть в корзине"},
@@ -177,3 +191,49 @@ class FavoriteToggleView(APIView):
             return Response({"status": "removed"}, status=status.HTTP_200_OK)
 
         return Response(FavoriteSerializer(favorite).data, status=status.HTTP_201_CREATED)
+
+
+class StandardResultsSetPagination(PageNumberPagination):
+    page_size = 20
+    page_size_query_param = 'page_size'
+    max_page_size = 100
+
+class ProductListView(APIView):
+    permission_classes = [IsAuthenticated]
+    pagination_class = StandardResultsSetPagination
+
+    def get(self, request):
+        sort = request.query_params.get('sort', 'new')
+        products = Product.objects.filter(is_active=True).select_related('category')
+
+        # Вычисляем final_price для сортировки с другим именем
+        products = products.annotate(
+            computed_final_price=ExpressionWrapper(
+                F('price') * (1 - F('discount_percent') / 100.0),
+                output_field=DecimalField(max_digits=10, decimal_places=2)
+            )
+        )
+
+        # Сортировка
+        if sort == 'popular':
+            products = products.annotate(
+                popularity=Count('favorited_by')
+            ).order_by('-popularity', 'name')
+        elif sort == 'new':
+            products = products.order_by('-created_at')
+        elif sort == 'cheap':
+            products = products.order_by('computed_final_price')
+        elif sort == 'expensive':
+            products = products.order_by('-computed_final_price')
+        else:
+            return Response(
+                {"error": "Неверный параметр сортировки. Используйте: popular, new, cheap, expensive"},
+                status=400
+            )
+
+        # Пагинация
+        paginator = self.pagination_class()
+        paginated_products = paginator.paginate_queryset(products, request)
+        serializer = ProductListSerializer(paginated_products, many=True)
+
+        return paginator.get_paginated_response(serializer.data)
