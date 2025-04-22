@@ -2,11 +2,14 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.views import APIView, Response
 from django.db.models import F, Q, Count, ExpressionWrapper, DecimalField
 from rest_framework.permissions import IsAuthenticated
-from .models import Product, Banner, Brand, Cart, CartItem, Size, Image, Favorite, ProductSizeInventory
+from .choices import OrderStatusEnum
 from django.shortcuts import get_object_or_404
-from .models import Product
 from rest_framework import status
-from decimal import Decimal
+from .models import (
+    Product, Banner, Brand, Cart,
+    CartItem, Size, Image,
+    Favorite, ProductSizeInventory,
+    OrderItem, PaymentQR, Order)
 from .serializers import (
     BannerListSerializer,
     BrandListSerializer,
@@ -14,7 +17,9 @@ from .serializers import (
     ProductDetailSerializer,
     RelatedProductSerializer,
     CartItemSerializer,
-    CartSerializer, SizeSerializer, FavoriteSerializer,
+    CartSerializer, SizeSerializer,
+    FavoriteSerializer, PaymentQRSerializer,
+    OrderSerializer,
 )
 
 
@@ -25,7 +30,6 @@ class IndexView(APIView):
         banners = Banner.objects.filter(is_active=True)
         brands = Brand.objects.filter(is_active=True)
 
-        # TODO: Фильтрация пол самым продаваемым
         best_sellers_products = Product.objects.filter(is_active=True).select_related('category')
         promo_products = Product.objects.filter(discount_percent__gt=0, is_active=True).select_related('category')
 
@@ -93,7 +97,6 @@ class CartView(APIView):
             size = serializer.validated_data['size']
             quantity = serializer.validated_data['quantity']
 
-            # Проверяем, есть ли уже такой элемент
             cart_item, created = CartItem.objects.get_or_create(
                 cart=cart,
                 product=product,
@@ -102,7 +105,6 @@ class CartView(APIView):
             )
             if not created:
                 new_quantity = cart_item.quantity + quantity
-                # Проверяем запас при добавлении
                 inventory = ProductSizeInventory.objects.filter(product=product, size=size).first()
                 if new_quantity > inventory.stock:
                     return Response({
@@ -198,6 +200,7 @@ class StandardResultsSetPagination(PageNumberPagination):
     page_size_query_param = 'page_size'
     max_page_size = 100
 
+
 class ProductListView(APIView):
     permission_classes = [IsAuthenticated]
     pagination_class = StandardResultsSetPagination
@@ -206,7 +209,6 @@ class ProductListView(APIView):
         sort = request.query_params.get('sort', 'new')
         products = Product.objects.filter(is_active=True).select_related('category')
 
-        # Вычисляем final_price для сортировки с другим именем
         products = products.annotate(
             computed_final_price=ExpressionWrapper(
                 F('price') * (1 - F('discount_percent') / 100.0),
@@ -214,7 +216,6 @@ class ProductListView(APIView):
             )
         )
 
-        # Сортировка
         if sort == 'popular':
             products = products.annotate(
                 popularity=Count('favorited_by')
@@ -231,9 +232,84 @@ class ProductListView(APIView):
                 status=400
             )
 
-        # Пагинация
         paginator = self.pagination_class()
         paginated_products = paginator.paginate_queryset(products, request)
         serializer = ProductListSerializer(paginated_products, many=True)
 
         return paginator.get_paginated_response(serializer.data)
+
+
+class OrderCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        cart = get_object_or_404(Cart, user=request.user)
+        item_ids = request.data.get('item_ids', None)
+        if item_ids:
+            cart_items = CartItem.objects.filter(id__in=item_ids, cart=cart)
+        else:
+            cart_items = cart.items.all()
+
+        if not cart_items:
+            return Response({"error": "Корзина пуста или товары не найдены"}, status=status.HTTP_400_BAD_REQUEST)
+
+        for item in cart_items:
+            inventory = ProductSizeInventory.objects.filter(product=item.product, size=item.size).first()
+            if not inventory or inventory.stock < item.quantity:
+                return Response({
+                    "error": f"Недостаточно товара: {item.product.name} ({item.size.name})"
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+        total = sum(item.product.final_price * item.quantity for item in cart_items)
+        order = Order.objects.create(
+            user=request.user,
+            total=total,
+            status=OrderStatusEnum.IN_PROGRESS
+        )
+
+        for item in cart_items:
+            OrderItem.objects.create(
+                order=order,
+                product=item.product,
+                size=item.size,
+                quantity=item.quantity,
+                price=item.product.final_price
+            )
+
+        if item_ids:
+            CartItem.objects.filter(id__in=item_ids, cart=cart).delete()
+        else:
+            cart.items.all().delete()
+
+        payment_qrs = PaymentQR.objects.all()
+        qr_serializer = PaymentQRSerializer(payment_qrs, many=True)
+
+        response_data = OrderSerializer(order).data
+        response_data['payment_qrs'] = qr_serializer.data
+
+        return Response(response_data, status=status.HTTP_201_CREATED)
+
+
+class OrderReceiptUploadView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, order_id):
+        order = get_object_or_404(Order, id=order_id, user=request.user, status=OrderStatusEnum.IN_PROGRESS)
+        receipt = request.FILES.get('receipt')
+        if not receipt:
+            return Response({"error": "Чек обязателен"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if receipt.size > 5 * 1024 * 1024:
+            return Response({"error": "Файл чека слишком большой (максимум 5 МБ)"}, status=status.HTTP_400_BAD_REQUEST)
+
+        order.receipt = receipt
+        order.save()
+        return Response(OrderSerializer(order).data, status=status.HTTP_200_OK)
+
+
+class OrderStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, order_id):
+        order = get_object_or_404(Order, id=order_id, user=request.user)
+        return Response(OrderSerializer(order).data)
