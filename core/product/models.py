@@ -1,7 +1,7 @@
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from decimal import Decimal
-from .choices import ProductStatusEnum, BannerPositionEnum
+from .choices import ProductStatusEnum, BannerPositionEnum, OrderStatusEnum
 from django.contrib.auth import get_user_model
 from django.core.validators import MinValueValidator
 
@@ -236,3 +236,69 @@ class ProductSizeInventory(models.Model):
         verbose_name = 'Запас товара'
         verbose_name_plural = 'Запасы товаров'
         unique_together = ('product', 'size')
+
+
+class Order(TimeStampedModel):
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='orders',
+        verbose_name='Пользователь'
+    )
+    total = models.DecimalField('Общая сумма', max_digits=10, decimal_places=2)
+    status = models.CharField(
+        'Статус',
+        max_length=20,
+        choices=OrderStatusEnum.choices,
+        default=OrderStatusEnum.IN_PROGRESS
+    )
+    receipt = models.FileField('Чек', upload_to='orders/receipts', blank=True, null=True)
+
+    def __str__(self):
+        return f"Заказ {self.id} ({self.user.username})"
+
+    class Meta:
+        verbose_name = 'Заказ'
+        verbose_name_plural = 'Заказы'
+
+
+class OrderItem(models.Model):
+    order = models.ForeignKey(
+        Order,
+        on_delete=models.CASCADE,
+        related_name='items',
+        verbose_name='Заказ'
+    )
+    product = models.ForeignKey(
+        'Product',
+        on_delete=models.CASCADE,
+        verbose_name='Товар'
+    )
+    size = models.ForeignKey(
+        'Size',
+        on_delete=models.CASCADE,
+        verbose_name='Размер'
+    )
+    quantity = models.PositiveIntegerField('Количество', validators=[MinValueValidator(1)])
+    price = models.DecimalField('Цена за единицу', max_digits=10, decimal_places=2)
+
+    def __str__(self):
+        return f"{self.product.name} ({self.size.name}) x{self.quantity}"
+
+    class Meta:
+        verbose_name = 'Элемент заказа'
+        verbose_name_plural = 'Элементы заказа'
+        unique_together = ('order', 'product', 'size')
+
+
+class PaymentQR(models.Model):
+    name = models.CharField('Название', max_length=100, help_text='Например, "Сбербанк" или "ЮMoney"')
+    image = models.ImageField('QR-код', upload_to='qr_codes')
+    created_at = models.DateTimeField('Дата создания', auto_now_add=True)
+
+    def __str__(self):
+        return self.name
+
+    class Meta:
+        verbose_name = 'QR-код оплаты'
+        verbose_name_plural = 'QR-коды оплаты'

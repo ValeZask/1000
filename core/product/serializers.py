@@ -1,7 +1,11 @@
-from .models import Product, Banner, Brand, Category, Size, Image, Cart, CartItem, Favorite, ProductSizeInventory
+from django.core.validators import FileExtensionValidator
 from rest_framework import serializers
 from decimal import Decimal
-
+from .models import (
+    Product, Banner, Brand, Category, Size,
+    Image, Cart, CartItem, Favorite, ProductSizeInventory,
+    Order, OrderItem, PaymentQR
+)
 
 class CategorySerializer(serializers.ModelSerializer):
     class Meta:
@@ -157,3 +161,33 @@ class FavoriteSerializer(serializers.ModelSerializer):
             'main_cover': obj.product.main_cover.url,
             'final_price': obj.product.final_price
         }
+
+
+class PaymentQRSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PaymentQR
+        fields = ('id', 'name', 'image')
+
+
+class OrderItemSerializer(serializers.ModelSerializer):
+    product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.filter(is_active=True))
+    size = serializers.SlugRelatedField(slug_field='name', queryset=Size.objects.all())
+    price = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = OrderItem
+        fields = ('product', 'size', 'quantity', 'price')
+
+
+class OrderSerializer(serializers.ModelSerializer):
+    items = OrderItemSerializer(many=True, read_only=True)
+    total = serializers.DecimalField(max_digits=10, decimal_places=2, read_only=True)
+    receipt = serializers.FileField(
+        validators=[FileExtensionValidator(allowed_extensions=['jpg', 'jpeg', 'png', 'pdf'])],
+        allow_null=True,
+        required=False
+    )
+
+    class Meta:
+        model = Order
+        fields = ('id', 'user', 'items', 'total', 'status', 'receipt', 'created_at')

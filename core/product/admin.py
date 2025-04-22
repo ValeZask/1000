@@ -1,11 +1,82 @@
 from django.contrib import admin
 from django.utils.html import format_html
-from django.urls import reverse
 from django.db.models import Count, Sum
+from .choices import OrderStatusEnum
 from .models import (
     Product, Banner, Brand, Category, Size, Image,
-    Cart, CartItem, Favorite, ProductSizeInventory
+    Cart, CartItem, Favorite, ProductSizeInventory,
+    Order, OrderItem, PaymentQR
 )
+
+class OrderItemInline(admin.TabularInline):
+    model = OrderItem
+    extra = 0
+    readonly_fields = ('product', 'size', 'quantity', 'price')
+
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'total', 'status', 'receipt_preview', 'created_at')
+    list_filter = ('status', 'created_at')
+    search_fields = ('user__username', 'id')
+    readonly_fields = ('total', 'created_at', 'updated_at', 'receipt_preview')
+    inlines = [OrderItemInline]
+    actions = ['mark_accepted', 'mark_rejected']
+
+    def receipt_preview(self, obj):
+        if obj.receipt:
+            return format_html('<a href="{}" target="_blank">Просмотреть чек</a>', obj.receipt.url)
+        return "Нет чека"
+
+    receipt_preview.short_description = 'Чек'
+
+    def mark_accepted(self, request, queryset):
+        success_count = 0
+        error_count = 0
+
+        for order in queryset:
+            try:
+                if order.status != OrderStatusEnum.ACCEPTED:
+                    order.status = OrderStatusEnum.ACCEPTED
+                    order.save()
+                    success_count += 1
+            except Exception as e:
+                error_count += 1
+                self.message_user(
+                    request, f"Ошибка при обработке заказа {order.id}: {str(e)}",
+                    level='ERROR'
+                )
+
+        if success_count:
+            self.message_user(
+                request, f"Успешно принято {success_count} заказов",
+                level='SUCCESS'
+            )
+        if error_count:
+            self.message_user(
+                request, f"Не удалось обработать {error_count} заказов",
+                level='ERROR'
+            )
+
+
+    def mark_rejected(self, request, queryset):
+        queryset.update(status=OrderStatusEnum.REJECTED)
+        self.message_user(request, f"Успешно отклонено {queryset.count()} заказов.", level='SUCCESS')
+
+    mark_rejected.short_description = "Пометить как отклонено"
+
+
+@admin.register(PaymentQR)
+class PaymentQRAdmin(admin.ModelAdmin):
+    list_display = ('name', 'image_preview', 'created_at')
+    readonly_fields = ('image_preview', 'created_at')
+    search_fields = ('name',)
+
+    def image_preview(self, obj):
+        if obj.image:
+            return format_html('<img src="{}" style="max-height: 100px;" />', obj.image.url)
+        return "Нет изображения"
+    image_preview.short_description = 'QR-код'
 
 
 class ImageInline(admin.TabularInline):
@@ -207,3 +278,4 @@ class ImageAdmin(admin.ModelAdmin):
 admin.site.site_header = 'Администрирование магазина кепок'
 admin.site.site_title = 'Панель управления магазином'
 admin.site.index_title = 'Управление магазином кепок'
+
